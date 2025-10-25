@@ -195,14 +195,15 @@ fit_theta_cvxr <- function(N, sigmas, S_ab, c_ab, Nab,
   S_const <- as.matrix(S_ab)
   p <- c_ab + 0.5 * (S_const %*% theta)
   ## Real-embedded PSD constraint on rho(θ)
-  SI <- Diagonal(2*N)   # real-embedded identity
-  Slist <- lapply(sigmas, function(S) Matrix(real_embed(S), sparse = TRUE))
-  A <- SI / N
-  for (j in 1:d) A <- A + 0.5 * theta[j] * Slist[[j]]
+  SI <- diag(2*N)   # real-embedded identity as dense matrix
+  Slist <- lapply(sigmas, real_embed)
+  A_affine <- SI / N
+  for (j in 1:d) A_affine <- A_affine + 0.5 * theta[j] * Slist[[j]]
+  rho <- Variable(2 * N, 2 * N, PSD = TRUE)
   
   ## Objective and constraints
-  obj <- -sum_entries(multiply_elemwise(Nab, log(p + eps_log)))
-  constr <- list(A %>>% 0, p >= 0)  # p>=0 is implied by A⪰0 but helps numerics
+  obj <- -sum_entries(Nab * log(p + eps_log))
+  constr <- list(rho == A_affine, p >= 0)  # rho PSD via variable, p>=0 aids numerics
   prob <- Problem(Minimize(obj), constr)
   
   solver <- match.arg(solver)
@@ -243,7 +244,8 @@ counts_from_ab <- function(a_seq, b_seq, ab_row, M) {
 
 ## ---------- End-to-end demo wrapper ----------
 run_demo <- function(N = 3, n_per_d = 10, eig_tol = 1e-10,
-                     solver = c("MOSEK","ECOS","SCS"), seed = 123) {
+                     solver = c("MOSEK","ECOS","SCS"), seed = 123,
+                     rho_true = NULL, theta_true = NULL) {
   solver <- match.arg(solver)
   cat(sprintf("Building SU(%d) basis ...\n", N))
   bas <- build_suN_basis(N); sigmas <- bas$sigmas; d <- bas$d
@@ -257,9 +259,16 @@ run_demo <- function(N = 3, n_per_d = 10, eig_tol = 1e-10,
   SC <- build_Sab_cab(sigmas, Q_list, N, ab_df)
   S_ab <- SC$S_ab; c_ab <- SC$c_ab
   
-  cat("Sampling from a random ground-truth state ...\n")
-  rho_true   <- random_density(N, seed = seed)
-  theta_true <- theta_from_rho(rho_true, sigmas)
+  cat("Preparing ground-truth state ...\n")
+  ## Derive a consistent (rho_true, theta_true) pair from the supplied inputs.
+  if (!is.null(theta_true)) {
+    rho_true <- rho_of_theta(theta_true, sigmas, N)
+  } else if (!is.null(rho_true)) {
+    theta_true <- theta_from_rho(rho_true, sigmas)
+  } else {
+    rho_true   <- random_density(N, seed = seed)
+    theta_true <- theta_from_rho(rho_true, sigmas)
+  }
   
   a_seq <- sequential_actions(d, n = d*n_per_d)
   p_list_true <- born_probs_list(rho_true, Q_list)
@@ -275,14 +284,15 @@ run_demo <- function(N = 3, n_per_d = 10, eig_tol = 1e-10,
   cat(sprintf("||theta_hat - theta_true||_2 / ||theta_true||_2 = %.3e\n", rel_err))
   
   list(N=N, d=d, ab_df=ab_df, Nab=Nab,
+       a_seq=a_seq, b_seq=b_seq,
        theta_true=theta_true, theta_hat=theta_hat,
        rho_true=rho_true,
        S_ab=S_ab, c_ab=c_ab, solver_status=fit$status)
 }
 
 ## --------------- Example run ---------------
-## n = d * 10 by default, as requested.
-## Uncomment to execute when sourcing this file interactively:
-# out <- run_demo(N = 3, n_per_d = 10, solver = "SCS", seed = 42)
-# str(out, max.level = 1)
-
+## Execute a demo only when run as a script, to keep sourcing lightweight.
+if (sys.nframe() == 0) {
+  out <- run_demo(N = 2, n_per_d = 10, solver = "SCS", seed = 42)
+  str(out, max.level = 1)
+}
